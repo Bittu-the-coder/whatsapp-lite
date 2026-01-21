@@ -139,7 +139,7 @@ Contributions are welcome! Here's how you can help:
 
 ```bash
 # Fork and clone the repository
-git clone https://github.com/YOUR_USERNAME/whatsapp-lite.git
+git clone https://github.com/bittu-the-coder/whatsapp-lite.git
 cd whatsapp-lite
 
 # Install dependencies
