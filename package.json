@@ -1,7 +1,33 @@
 {
   "name": "whatsapp-lite",
-  "private": true,
   "version": "0.1.0",
+  "description": "Lightweight WhatsApp desktop client for Windows. Built with Tauri & Rust - uses 10x less RAM than official app. Privacy-focused, open-source WhatsApp wrapper with system tray integration.",
+  "author": "bittu-the-coder",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bittu-the-coder/whatsapp-lite.git"
+  },
+  "keywords": [
+    "whatsapp",
+    "whatsapp-desktop",
+    "whatsapp-client",
+    "tauri",
+    "rust",
+    "desktop-app",
+    "messaging",
+    "privacy",
+    "system-tray",
+    "lightweight",
+    "electron-alternative",
+    "windows",
+    "open-source"
+  ],
+  "bugs": {
+    "url": "https://github.com/bittu-the-coder/whatsapp-lite/issues"
+  },
+  "homepage": "https://bittu-the-coder.github.io/whatsapp-lite/",
+  "private": true,
   "type": "module",
   "scripts": {
     "tauri": "tauri"
