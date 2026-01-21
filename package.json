@@ -26,7 +26,7 @@
   "bugs": {
     "url": "https://github.com/bittu-the-coder/whatsapp-lite/issues"
   },
-  "homepage": "https://www.bittuthecoder.me/whatsapp-lite/",
+  "homepage": "https://bittu-the-coder.github.io/whatsapp-lite/",
   "private": true,
   "type": "module",
   "scripts": {
