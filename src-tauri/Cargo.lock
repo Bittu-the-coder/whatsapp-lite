@@ -4518,12 +4518,15 @@ dependencies = [
 name = "whatsapp-lite"
 version = "0.2.0"
 dependencies = [
+ "glib",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
+ "webkit2gtk",
+ "webview2-com",
  "windows 0.58.0",
 ]
 

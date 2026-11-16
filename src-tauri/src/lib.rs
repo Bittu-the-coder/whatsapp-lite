@@ -274,12 +274,73 @@ pub fn run() {
             // CSS Injection & Right Click Disable & Badge Monitoring
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_icon(app_icon.clone());
+
+                #[cfg(target_os = "linux")]
+                {
+                    use webkit2gtk::{NotificationExt, PermissionRequestExt, SettingsExt, WebViewExt};
+                    let _ = window.with_webview(|webview| {
+                        let wv = webview.inner();
+
+                        if let Some(settings) = WebViewExt::settings(&wv) {
+                            settings.set_enable_media_stream(true);
+                            settings.set_enable_webrtc(true);
+                            settings.set_enable_webaudio(true);
+                            settings.set_enable_media(true);
+                            settings.set_enable_mediasource(true);
+                            settings.set_media_playback_requires_user_gesture(false);
+                        }
+
+                        wv.connect_permission_request(|_, request| {
+                            request.allow();
+                            true
+                        });
+
+                        wv.connect_show_notification(|_, notification| {
+                            let title = notification.title().unwrap_or_else(|| glib::GString::from("WhatsApp"));
+                            let body = notification.body().unwrap_or_else(|| glib::GString::from(""));
+                            let _ = std::process::Command::new("notify-send")
+                                .arg("-i")
+                                .arg("whatsapp-lite")
+                                .arg(title.as_str())
+                                .arg(body.as_str())
+                                .spawn();
+                            true
+                        });
+                    });
+                }
+
+                #[cfg(target_os = "windows")]
+                {
+                    use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
+                    let _ = window.with_webview(|webview| {
+                        unsafe {
+                            if let Ok(core) = webview.controller().CoreWebView2() {
+                                let mut token = _EventRegistrationToken::default();
+                                let _ = core.add_PermissionRequested(
+                                    &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                                        if let Some(args) = args {
+                                            let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                        }
+                                        Ok(())
+                                    })),
+                                    &mut token,
+                                );
+                            }
+                        }
+                    });
+                }
+
             	let zoom_script = include_str!("../../src/zoom.js");
                 let main_script = format!(
                     r#"
                     const init = () => {{
                         // Disable Right Click
                         document.addEventListener('contextmenu', event => event.preventDefault());
+
+                        // Automatically request notification permission
+                        if (window.Notification && Notification.permission !== 'granted') {{
+                            Notification.requestPermission().catch(() => {{}});
+                        }}
 
                         const css = `{}`;
                         const style = document.createElement('style');
