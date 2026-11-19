@@ -46,6 +46,28 @@ fn set_badge_count(app: AppHandle, count: u32) -> std::result::Result<(), String
     Ok(())
 }
 
+// Tauri command to dispatch desktop notifications
+#[tauri::command]
+fn send_notification(app: AppHandle, title: String, body: String) -> std::result::Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .arg("-i")
+            .arg("whatsapp-lite")
+            .arg("-a")
+            .arg("WhatsApp Lite")
+            .arg(&title)
+            .arg(&body)
+            .spawn();
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn set_taskbar_badge(hwnd: *mut std::ffi::c_void, count: u32) -> windows::core::Result<()> {
     unsafe {
@@ -218,7 +240,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         // .plugin(tauri_plugin_global_shortcut::Builder::new().build()) // Commented out until configured
-        .invoke_handler(tauri::generate_handler![set_badge_count])
+        .invoke_handler(tauri::generate_handler![set_badge_count, send_notification])
         .setup(|app| {
             let _handle = app.handle();
 
@@ -227,9 +249,13 @@ pub fn run() {
             let show_i = MenuItem::with_id(app, "show", "Show/Hide", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
 
+            let icon_bytes = include_bytes!("../icons/icon.png");
+            let app_icon = tauri::image::Image::from_bytes(icon_bytes)
+                .unwrap_or_else(|_| app.default_window_icon().unwrap().clone());
+
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(app_icon.clone())
                 .on_menu_event(|app, event| {
                     match event.id.as_ref() {
                         "quit" => {
@@ -269,12 +295,127 @@ pub fn run() {
 
             // CSS Injection & Right Click Disable & Badge Monitoring
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_icon(app_icon.clone());
+
+                #[cfg(target_os = "linux")]
+                {
+                    use webkit2gtk::{NotificationExt, PermissionRequestExt, SettingsExt, WebViewExt};
+                    let _ = window.with_webview(|webview| {
+                        let wv = webview.inner();
+
+                        if let Some(settings) = WebViewExt::settings(&wv) {
+                            settings.set_enable_media_stream(true);
+                            settings.set_enable_webrtc(true);
+                            settings.set_enable_webaudio(true);
+                            settings.set_enable_media(true);
+                            settings.set_enable_mediasource(true);
+                            settings.set_media_playback_requires_user_gesture(false);
+                        }
+
+                        wv.connect_permission_request(|_, request| {
+                            request.allow();
+                            true
+                        });
+
+                        wv.connect_show_notification(|_, notification| {
+                            let title = notification.title().unwrap_or_else(|| glib::GString::from("WhatsApp"));
+                            let body = notification.body().unwrap_or_else(|| glib::GString::from(""));
+                            let _ = std::process::Command::new("notify-send")
+                                .arg("-i")
+                                .arg("whatsapp-lite")
+                                .arg(title.as_str())
+                                .arg(body.as_str())
+                                .spawn();
+                            true
+                        });
+                    });
+                }
+
+                #[cfg(target_os = "windows")]
+                {
+                    use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
+                    let _ = window.with_webview(|webview| {
+                        unsafe {
+                            if let Ok(core) = webview.controller().CoreWebView2() {
+                                let mut token = _EventRegistrationToken::default();
+                                let _ = core.add_PermissionRequested(
+                                    &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                                        if let Some(args) = args {
+                                            let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                        }
+                                        Ok(())
+                                    })),
+                                    &mut token,
+                                );
+                            }
+                        }
+                    });
+                }
+
             	let zoom_script = include_str!("../../src/zoom.js");
                 let main_script = format!(
                     r#"
                     const init = () => {{
                         // Disable Right Click
                         document.addEventListener('contextmenu', event => event.preventDefault());
+
+                        // Notification Hook & Setup
+                        try {{
+                            if (window.Notification) {{
+                                const NativeNotification = window.Notification;
+
+                                window.Notification = function(title, options) {{
+                                    const body = (options && options.body) ? options.body : '';
+                                    if (window.__TAURI__ && window.__TAURI__.core) {{
+                                        window.__TAURI__.core.invoke('send_notification', {{
+                                            title: String(title || 'WhatsApp'),
+                                            body: String(body)
+                                        }}).catch(() => {{}});
+                                    }}
+                                    try {{
+                                        return new NativeNotification(title, options);
+                                    }} catch (e) {{
+                                        return {{
+                                            title: title,
+                                            body: body,
+                                            close: () => {{}},
+                                            addEventListener: () => {{}},
+                                            removeEventListener: () => {{}}
+                                        }};
+                                    }}
+                                }};
+
+                                window.Notification.permission = 'granted';
+                                window.Notification.requestPermission = function(callback) {{
+                                    const p = Promise.resolve('granted');
+                                    if (typeof callback === 'function') callback('granted');
+                                    return p;
+                                }};
+
+                                Object.defineProperty(window.Notification, 'permission', {{
+                                    get: () => 'granted',
+                                    set: () => {{}},
+                                    configurable: true
+                                }});
+                            }}
+
+                            // Intercept ServiceWorker showNotification
+                            if (window.ServiceWorkerRegistration && ServiceWorkerRegistration.prototype.showNotification) {{
+                                const origShow = ServiceWorkerRegistration.prototype.showNotification;
+                                ServiceWorkerRegistration.prototype.showNotification = function(title, options) {{
+                                    const body = (options && options.body) ? options.body : '';
+                                    if (window.__TAURI__ && window.__TAURI__.core) {{
+                                        window.__TAURI__.core.invoke('send_notification', {{
+                                            title: String(title || 'WhatsApp'),
+                                            body: String(body)
+                                        }}).catch(() => {{}});
+                                    }}
+                                    return origShow.call(this, title, options);
+                                }};
+                            }}
+                        }} catch (err) {{
+                            console.error('Notification hook error:', err);
+                        }}
 
                         const css = `{}`;
                         const style = document.createElement('style');
@@ -344,8 +485,17 @@ pub fn run() {
                                     }}
                                 }}
 
-                                // Update badge if count changed
+                                // Update badge and notify if count increased
                                 if (totalUnread !== lastCount) {{
+                                    if (totalUnread > lastCount && lastCount !== 0) {{
+                                        const diff = totalUnread - lastCount;
+                                        if (document.hidden && window.__TAURI__ && window.__TAURI__.core) {{
+                                            window.__TAURI__.core.invoke('send_notification', {{
+                                                title: 'WhatsApp',
+                                                body: diff === 1 ? 'New message received' : `${{diff}} new messages received`
+                                            }}).catch(() => {{}});
+                                        }}
+                                    }}
                                     lastCount = totalUnread;
                                     if (window.__TAURI__) {{
                                         await window.__TAURI__.core.invoke('set_badge_count', {{ count: totalUnread }});
