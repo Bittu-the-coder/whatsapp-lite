@@ -46,6 +46,28 @@ fn set_badge_count(app: AppHandle, count: u32) -> std::result::Result<(), String
     Ok(())
 }
 
+// Tauri command to dispatch desktop notifications
+#[tauri::command]
+fn send_notification(app: AppHandle, title: String, body: String) -> std::result::Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .arg("-i")
+            .arg("whatsapp-lite")
+            .arg("-a")
+            .arg("WhatsApp Lite")
+            .arg(&title)
+            .arg(&body)
+            .spawn();
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn set_taskbar_badge(hwnd: *mut std::ffi::c_void, count: u32) -> windows::core::Result<()> {
     unsafe {
@@ -218,7 +240,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         // .plugin(tauri_plugin_global_shortcut::Builder::new().build()) // Commented out until configured
-        .invoke_handler(tauri::generate_handler![set_badge_count])
+        .invoke_handler(tauri::generate_handler![set_badge_count, send_notification])
         .setup(|app| {
             let _handle = app.handle();
 
@@ -337,9 +359,62 @@ pub fn run() {
                         // Disable Right Click
                         document.addEventListener('contextmenu', event => event.preventDefault());
 
-                        // Automatically request notification permission
-                        if (window.Notification && Notification.permission !== 'granted') {{
-                            Notification.requestPermission().catch(() => {{}});
+                        // Notification Hook & Setup
+                        try {{
+                            if (window.Notification) {{
+                                const NativeNotification = window.Notification;
+
+                                window.Notification = function(title, options) {{
+                                    const body = (options && options.body) ? options.body : '';
+                                    if (window.__TAURI__ && window.__TAURI__.core) {{
+                                        window.__TAURI__.core.invoke('send_notification', {{
+                                            title: String(title || 'WhatsApp'),
+                                            body: String(body)
+                                        }}).catch(() => {{}});
+                                    }}
+                                    try {{
+                                        return new NativeNotification(title, options);
+                                    }} catch (e) {{
+                                        return {{
+                                            title: title,
+                                            body: body,
+                                            close: () => {{}},
+                                            addEventListener: () => {{}},
+                                            removeEventListener: () => {{}}
+                                        }};
+                                    }}
+                                }};
+
+                                window.Notification.permission = 'granted';
+                                window.Notification.requestPermission = function(callback) {{
+                                    const p = Promise.resolve('granted');
+                                    if (typeof callback === 'function') callback('granted');
+                                    return p;
+                                }};
+
+                                Object.defineProperty(window.Notification, 'permission', {{
+                                    get: () => 'granted',
+                                    set: () => {{}},
+                                    configurable: true
+                                }});
+                            }}
+
+                            // Intercept ServiceWorker showNotification
+                            if (window.ServiceWorkerRegistration && ServiceWorkerRegistration.prototype.showNotification) {{
+                                const origShow = ServiceWorkerRegistration.prototype.showNotification;
+                                ServiceWorkerRegistration.prototype.showNotification = function(title, options) {{
+                                    const body = (options && options.body) ? options.body : '';
+                                    if (window.__TAURI__ && window.__TAURI__.core) {{
+                                        window.__TAURI__.core.invoke('send_notification', {{
+                                            title: String(title || 'WhatsApp'),
+                                            body: String(body)
+                                        }}).catch(() => {{}});
+                                    }}
+                                    return origShow.call(this, title, options);
+                                }};
+                            }}
+                        }} catch (err) {{
+                            console.error('Notification hook error:', err);
                         }}
 
                         const css = `{}`;
@@ -410,8 +485,17 @@ pub fn run() {
                                     }}
                                 }}
 
-                                // Update badge if count changed
+                                // Update badge and notify if count increased
                                 if (totalUnread !== lastCount) {{
+                                    if (totalUnread > lastCount && lastCount !== 0) {{
+                                        const diff = totalUnread - lastCount;
+                                        if (document.hidden && window.__TAURI__ && window.__TAURI__.core) {{
+                                            window.__TAURI__.core.invoke('send_notification', {{
+                                                title: 'WhatsApp',
+                                                body: diff === 1 ? 'New message received' : `${{diff}} new messages received`
+                                            }}).catch(() => {{}});
+                                        }}
+                                    }}
                                     lastCount = totalUnread;
                                     if (window.__TAURI__) {{
                                         await window.__TAURI__.core.invoke('set_badge_count', {{ count: totalUnread }});
