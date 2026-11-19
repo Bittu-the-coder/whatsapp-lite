@@ -297,67 +297,34 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_icon(app_icon.clone());
 
-                #[cfg(target_os = "linux")]
-                {
-                    use webkit2gtk::{NotificationExt, PermissionRequestExt, SettingsExt, WebViewExt};
-                    let _ = window.with_webview(|webview| {
-                        let wv = webview.inner();
-
-                        if let Some(settings) = WebViewExt::settings(&wv) {
-                            settings.set_enable_media_stream(true);
-                            settings.set_enable_webrtc(true);
-                            settings.set_enable_webaudio(true);
-                            settings.set_enable_media(true);
-                            settings.set_enable_mediasource(true);
-                            settings.set_media_playback_requires_user_gesture(false);
-                        }
-
-                        wv.connect_permission_request(|_, request| {
-                            request.allow();
-                            true
-                        });
-
-                        wv.connect_show_notification(|_, notification| {
-                            let title = notification.title().unwrap_or_else(|| glib::GString::from("WhatsApp"));
-                            let body = notification.body().unwrap_or_else(|| glib::GString::from(""));
-                            let _ = std::process::Command::new("notify-send")
-                                .arg("-i")
-                                .arg("whatsapp-lite")
-                                .arg(title.as_str())
-                                .arg(body.as_str())
-                                .spawn();
-                            true
-                        });
-                    });
-                }
-
-                #[cfg(target_os = "windows")]
-                {
-                    use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
-                    let _ = window.with_webview(|webview| {
-                        unsafe {
-                            if let Ok(core) = webview.controller().CoreWebView2() {
-                                let mut token = _EventRegistrationToken::default();
-                                let _ = core.add_PermissionRequested(
-                                    &PermissionRequestedEventHandler::create(Box::new(|_, args| {
-                                        if let Some(args) = args {
-                                            let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
-                                        }
-                                        Ok(())
-                                    })),
-                                    &mut token,
-                                );
-                            }
-                        }
-                    });
-                }
-
             	let zoom_script = include_str!("../../src/zoom.js");
                 let main_script = format!(
                     r#"
                     const init = () => {{
                         // Disable Right Click
                         document.addEventListener('contextmenu', event => event.preventDefault());
+
+                        // Override navigator.permissions.query to auto-grant microphone, camera, and notifications
+                        try {{
+                            if (navigator.permissions && navigator.permissions.query) {{
+                                const origQuery = navigator.permissions.query.bind(navigator.permissions);
+                                navigator.permissions.query = async function(param) {{
+                                    if (param && (param.name === 'microphone' || param.name === 'camera' || param.name === 'notifications')) {{
+                                        return {{
+                                            state: 'granted',
+                                            name: param.name,
+                                            onchange: null,
+                                            addEventListener: () => {{}},
+                                            removeEventListener: () => {{}},
+                                            dispatchEvent: () => false
+                                        }};
+                                    }}
+                                    return origQuery(param);
+                                }};
+                            }}
+                        }} catch (e) {{
+                            console.error('permissions.query override error:', e);
+                        }}
 
                         // Notification Hook & Setup
                         try {{
@@ -529,9 +496,88 @@ pub fn run() {
                     css::CUSTOM_CSS
                 );
 
-                // Inject all scripts
-                window.eval(&main_script)?;
-                window.eval(zoom_script)?;
+                #[cfg(target_os = "linux")]
+                {
+                    use webkit2gtk::{
+                        NotificationExt, PermissionRequestExt, SettingsExt, UserContentInjectedFrames,
+                        UserContentManagerExt, UserScript, UserScriptInjectionTime, WebViewExt,
+                    };
+                    let full_script = format!("{}\n{}", main_script, zoom_script);
+                    let _ = window.with_webview(move |webview| {
+                        let wv = webview.inner();
+
+                        if let Some(settings) = WebViewExt::settings(&wv) {
+                            settings.set_enable_media_stream(true);
+                            settings.set_enable_webrtc(true);
+                            settings.set_enable_webaudio(true);
+                            settings.set_enable_media(true);
+                            settings.set_enable_mediasource(true);
+                            settings.set_media_playback_requires_user_gesture(false);
+                        }
+
+                        if let Some(ucm) = wv.user_content_manager() {
+                            let script = UserScript::new(
+                                &full_script,
+                                UserContentInjectedFrames::AllFrames,
+                                UserScriptInjectionTime::Start,
+                                &[],
+                                &[],
+                            );
+                            ucm.add_script(&script);
+                        }
+
+                        wv.connect_permission_request(|_, request| {
+                            request.allow();
+                            true
+                        });
+
+                        wv.connect_show_notification(|_, notification| {
+                            let title = notification.title().unwrap_or_else(|| glib::GString::from("WhatsApp"));
+                            let body = notification.body().unwrap_or_else(|| glib::GString::from(""));
+                            let _ = std::process::Command::new("notify-send")
+                                .arg("-i")
+                                .arg("whatsapp-lite")
+                                .arg("-a")
+                                .arg("WhatsApp Lite")
+                                .arg(title.as_str())
+                                .arg(body.as_str())
+                                .spawn();
+                            true
+                        });
+                    });
+                }
+
+                #[cfg(target_os = "windows")]
+                {
+                    use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
+                    let full_script_win = format!("{}\n{}", main_script, zoom_script);
+                    let _ = window.with_webview(move |webview| {
+                        unsafe {
+                            if let Ok(core) = webview.controller().CoreWebView2() {
+                                let script_utf16: Vec<u16> = full_script_win.encode_utf16().chain(std::iter::once(0)).collect();
+                                let _ = core.AddScriptToExecuteOnDocumentCreated(
+                                    windows::core::PCWSTR(script_utf16.as_ptr()),
+                                    None,
+                                );
+
+                                let mut token = _EventRegistrationToken::default();
+                                let _ = core.add_PermissionRequested(
+                                    &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                                        if let Some(args) = args {
+                                            let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                        }
+                                        Ok(())
+                                    })),
+                                    &mut token,
+                                );
+                            }
+                        }
+                    });
+                }
+
+                // Inject as fallback
+                let _ = window.eval(&main_script);
+                let _ = window.eval(zoom_script);
             }
 
             Ok(())
