@@ -16,7 +16,8 @@
 				"url": "https://web.whatsapp.com",
 				"visible": true,
 				"zoomHotkeysEnabled": true,
-				"maximized": true
+				"maximized": true,
+				"dragDropEnabled": false
 			}
 		],
 		"security": {
